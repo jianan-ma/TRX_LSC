@@ -1,0 +1,323 @@
+--------------------------------------------------------update149-------------------------------------------------
+CREATE TABLE IF NOT EXISTS `dpmcall` (
+  `taskid` varchar(13) NOT NULL,
+  `active` float NOT NULL DEFAULT (0),
+  `n1` float NOT NULL DEFAULT (0),
+  `eff1` float NOT NULL DEFAULT (0),
+  `x0` double NOT NULL DEFAULT '0',
+  `x1` double NOT NULL DEFAULT '0',
+  `x2` double NOT NULL DEFAULT '0',
+  `x3` double NOT NULL DEFAULT '0',
+  PRIMARY KEY (`taskid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS `temperature` (
+  `dt` datetime NOT NULL,
+  `temp1` decimal(3,1) DEFAULT (0),
+  `temp2` decimal(3,1) DEFAULT (0),
+  `humi` decimal(3,1) DEFAULT (0),
+  PRIMARY KEY (`dt`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-------------------------------------------------------------------------
+
+INSERT INTO dpmcall (taskid, active)
+             SELECT 
+               t.taskid,
+               (CASE 
+                   WHEN b.unit = 0 THEN b.activity 
+                   WHEN b.unit = 1 THEN b.activity * 60 
+                   WHEN b.unit = 2 THEN b.activity * 3.7E10 * 60 
+                   WHEN b.unit = 3 THEN b.activity * 3.7E7 * 60 
+                   WHEN b.unit = 4 THEN b.activity * 3.7E4 * 60 
+               END) * 
+               EXP( -LN(2) / 
+                    (CASE 
+                         WHEN a.unit = 'a' THEN a.halflife * 365.2422 
+                         WHEN a.unit = 'b' THEN a.halflife 
+                         WHEN a.unit = 'h' THEN a.halflife / 24.0 
+                     END) * 
+                    DATEDIFF(t.dt, b.calibrateddate))
+             FROM tasklist t
+             JOIN specimen b ON t.eff1 = b.name
+             JOIN nuclide a ON a.name = b.nuclide
+             WHERE t.type IN (1, 17, 20)
+               AND (CASE 
+                       WHEN a.unit = 'a' THEN a.halflife * 365.2422 
+                       WHEN a.unit = 'b' THEN a.halflife 
+                       WHEN a.unit = 'h' THEN a.halflife / 24.0 
+                   END) > 0
+             ON DUPLICATE KEY UPDATE
+               active = VALUES(active)
+
+-------------------------------------------------------------------------
+
+UPDATE tasklist t
+JOIN quench b ON t.eff1 = b.name
+JOIN nuclide a ON a.name = b.nuclide
+SET t.eff2 = (
+    (CASE 
+        WHEN b.unit = 0 THEN b.activity 
+        WHEN b.unit = 1 THEN b.activity * 60 
+        WHEN b.unit = 2 THEN b.activity * 3.7E10 * 60 
+        WHEN b.unit = 3 THEN b.activity * 3.7E7 * 60 
+        WHEN b.unit = 4 THEN b.activity * 3.7E4 * 60 
+     END)
+     * 
+     EXP(-LN(2) / 
+         (CASE 
+             WHEN a.unit = 'a' THEN a.halflife * 365.2422 
+             WHEN a.unit = 'b' THEN a.halflife 
+             WHEN a.unit = 'h' THEN a.halflife / 24.0 
+          END) 
+         * DATEDIFF(t.dt, b.calibrateddate))
+)
+WHERE t.type = 6
+  AND (CASE 
+          WHEN a.unit = 'a' THEN a.halflife * 365.2422 
+          WHEN a.unit = 'b' THEN a.halflife 
+          WHEN a.unit = 'h' THEN a.halflife / 24.0 
+       END) > 0;
+
+---------------------------------------------------------update1410---------------------------------------------------
+DROP TRIGGER `up_tasklist`;
+
+UPDATE `tasklist` SET `complate`=2 WHERE `complate`=0
+
+*************************这一段先忽略**************************************************
+CREATE DEFINER=`root`@`localhost` TRIGGER `up_tasklist` AFTER UPDATE ON `tasklist` FOR EACH ROW BEGIN
+	DECLARE flag INT DEFAULT 0;
+	IF NEW.`complate`-OLD.`complate` =1  THEN
+	INSERT INTO `logs` (`dt`,`user`,`type`,`msg`) VALUES (NOW(),@cur_user,5,CONCAT('完成任务:',OLD.`name`,',',OLD.`taskid`) );
+	ELSEIF NEW.`complate`-OLD.`complate` =2 THEN
+	INSERT INTO `logs` (`dt`,`user`,`type`,`msg`) VALUES (NOW(),@cur_user,5,CONCAT('停止任务:',OLD.`name`,',',OLD.`taskid`) );
+	ELSEIF OLD.eff1 != NEW.eff1 THEN 
+	INSERT INTO `logs` (`dt`,`user`,`type`,`msg`,`oldvalue`,`newvalue`) VALUES (NOW(),@cur_user,41,CONCAT('更改调用曲线:',OLD.`name`,',',OLD.`taskid`),OLD.eff1,NEW.eff1);
+	ELSE
+	BEGIN
+	IF OLD.min1!=NEW.min1 THEN SET flag=flag+1; END IF;
+	IF OLD.max1!=NEW.max1 THEN SET flag=flag+2; END IF;
+	IF OLD.min2!=NEW.min2 THEN SET flag=flag+4; END IF;
+	IF OLD.max2!=NEW.max2 THEN SET flag=flag+8; END IF;
+	IF OLD.min3!=NEW.min3 THEN SET flag=flag+16; END IF;
+	IF OLD.max3!=NEW.max3 THEN SET flag=flag+32; END IF;
+	IF flag>0 THEN 
+	INSERT INTO `logs` (`dt`,`user`,`type`,`msg`,`oldvalue`,`newvalue`) VALUES (NOW(),@cur_user,40,CONCAT('更改窗口:',OLD.`name`,',',OLD.`taskid`),
+	CONCAT(OLD.min1,',',OLD.max1,',',OLD.min2,',',OLD.max2,',',OLD.min3,',',OLD.max3),CONCAT(NEW.min1,',',NEW.max1,',',NEW.min2,',',NEW.max2,',',NEW.min3,',',NEW.max3));
+	END IF;
+	END ;
+	END IF;
+END;
+SELECT `DEFAULT_COLLATION_NAME` FROM `information_schema`.`SCHEMATA` WHERE `SCHEMA_NAME`='trxdata_t';
+********************************这一段忽略**********************************************
+-----------------------------------------------------update1411----------------------------------------------------------
+ALTER TABLE `tasksam`
+	CHANGE COLUMN `samID` `samID` VARCHAR(20) NULL DEFAULT NULL COLLATE 'utf8mb4_0900_ai_ci' AFTER `describe`;
+ALTER TABLE `samdescribe`
+	CHANGE COLUMN `samID` `samID` VARCHAR(20) NULL DEFAULT NULL COLLATE 'utf8mb4_0900_ai_ci' AFTER `describe`;
+ALTER TABLE `abcall_id`
+	CHANGE COLUMN `samID` `samID` VARCHAR(20) NULL DEFAULT NULL COLLATE 'utf8mb4_0900_ai_ci' ;
+ALTER TABLE `abstandard_a`
+	CHANGE COLUMN `samID` `samID` VARCHAR(20) NULL DEFAULT NULL COLLATE 'utf8mb4_0900_ai_ci' ;
+ALTER TABLE `abstandard_b`
+	CHANGE COLUMN `samID` `samID` VARCHAR(20) NULL DEFAULT NULL COLLATE 'utf8mb4_0900_ai_ci' ;
+ALTER TABLE `abstandard_bg`
+	CHANGE COLUMN `samID` `samID` VARCHAR(20) NULL DEFAULT NULL COLLATE 'utf8mb4_0900_ai_ci' ;
+ALTER TABLE `abstandard_id`
+	CHANGE COLUMN `samID` `samID` VARCHAR(20) NULL DEFAULT NULL COLLATE 'utf8mb4_0900_ai_ci' ;
+ALTER TABLE `cpmdata_id`
+	CHANGE COLUMN `samID` `samID` VARCHAR(20) NULL DEFAULT NULL COLLATE 'utf8mb4_0900_ai_ci' ;
+ALTER TABLE `datarecord`
+	CHANGE COLUMN `samID` `samID` VARCHAR(20) NULL DEFAULT NULL COLLATE 'utf8mb4_0900_ai_ci'  AFTER `pos`;
+ALTER TABLE `dpmdata_bg`
+	CHANGE COLUMN `samID` `samID` VARCHAR(20) NULL DEFAULT NULL COLLATE 'utf8mb4_0900_ai_ci' ;
+ALTER TABLE `dpmdata_id`
+	CHANGE COLUMN `samID` `samID` VARCHAR(20) NULL DEFAULT NULL COLLATE 'utf8mb4_0900_ai_ci' ;
+ALTER TABLE `dpmdata_sa`
+	CHANGE COLUMN `samID` `samID` VARCHAR(20) NULL DEFAULT NULL COLLATE 'utf8mb4_0900_ai_ci' ;
+ALTER TABLE `matchtopt`
+	CHANGE COLUMN `samID` `samID` VARCHAR(20) NULL DEFAULT NULL COLLATE 'utf8mb4_0900_ai_ci'  AFTER `bd`;
+ALTER TABLE `taskrange`
+	CHANGE COLUMN `samID` `samID` VARCHAR(20) NULL DEFAULT NULL COLLATE 'utf8mb4_0900_ai_ci'  AFTER `taskid`;
+ALTER TABLE `abstandard_a` DROP COLUMN `x_ba`;
+ALTER TABLE `abstandard_b` DROP COLUMN `x_ab`;
+--------------------------------------------update1412----------------------------------------------------
+SELECT 
+    TABLE_SCHEMA, 
+    TABLE_NAME, 
+    COLUMN_NAME, 
+    CONCAT('ALTER TABLE `', TABLE_SCHEMA, '`.`', TABLE_NAME, 
+           '` MODIFY COLUMN `', COLUMN_NAME, '` DOUBLE', 
+           IF(IS_NULLABLE = 'NO', ' NOT NULL', ''), 
+           IF(COLUMN_DEFAULT IS NOT NULL, CONCAT(' DEFAULT ', COLUMN_DEFAULT), ''), 
+           ';') AS alter_statement
+FROM 
+    INFORMATION_SCHEMA.COLUMNS 
+WHERE 
+    DATA_TYPE = 'float' 
+    AND TABLE_SCHEMA = 'trxdata_t';
+-------------------------------------------update1413----------------------------------------------------
+ALTER TABLE `datarecord`
+	ADD COLUMN `ksdt` DATETIME NULL DEFAULT NULL AFTER `ln3`;
+
+ALTER TABLE `bgdata`
+	CHANGE COLUMN `dt` `dt` TINYTEXT NULL AFTER `bz`;
+
+UPDATE datarecord 
+SET ksdt = DATE_SUB(dt, INTERVAL times SECOND)
+WHERE ksdt IS NULL;
+------------------------------------update1417-custom1-----------------------------------------------
+ALTER TABLE `cpmdata`
+	ADD COLUMN `N1t` DOUBLE NULL DEFAULT '0' AFTER `N3`,
+	ADD COLUMN `TDCR1` DOUBLE NULL DEFAULT '0' AFTER `N1t`;
+ALTER TABLE `dpmdata`
+	ADD COLUMN `N1t` DOUBLE NULL DEFAULT '0' AFTER `FM`,
+	ADD COLUMN `TDCR1` DOUBLE NULL DEFAULT '0' AFTER `N1t`;
+ALTER TABLE `quenchcurve`
+	ADD COLUMN `N1t` DOUBLE NULL DEFAULT '0' AFTER `chk`,
+	ADD COLUMN `TDCR1` DOUBLE NULL DEFAULT '0' AFTER `N1t`;
+
+
+
+ALTER TABLE `cpmdata_id`
+	ADD COLUMN `N1t` DOUBLE NULL DEFAULT '0' AFTER `N3`,
+	ADD COLUMN `TDCR1` DOUBLE NULL DEFAULT '0' AFTER `N1t`;
+ALTER TABLE `dpmdata_bg`
+	ADD COLUMN `N1t` DOUBLE NULL DEFAULT '0' AFTER `FM`,
+	ADD COLUMN `TDCR1` DOUBLE NULL DEFAULT '0' AFTER `N1t`;
+ALTER TABLE `dpmdata_id`
+	ADD COLUMN `N1t` DOUBLE NULL DEFAULT '0' AFTER `FM`,
+	ADD COLUMN `TDCR1` DOUBLE NULL DEFAULT '0' AFTER `N1t`;
+ALTER TABLE `dpmdata_sa`
+	ADD COLUMN `N1t` DOUBLE NULL DEFAULT '0' AFTER `FM`,
+	ADD COLUMN `TDCR1` DOUBLE NULL DEFAULT '0' AFTER `N1t`;
+---------------------------------update150----------------------------------------------------
+ALTER TABLE `quenchcurve`
+	ADD COLUMN `N2` DOUBLE NOT NULL DEFAULT '0' AFTER `chk`,
+	ADD COLUMN `eff2` DOUBLE NOT NULL DEFAULT '0' AFTER `N2`,
+	ADD COLUMN `N3` DOUBLE NOT NULL DEFAULT '0' AFTER `eff2`,
+	ADD COLUMN `eff3` DOUBLE NOT NULL DEFAULT '0' AFTER `N3`;
+
+CREATE TABLE `directdpmdata` (
+	`taskid` VARCHAR(13) NOT NULL COLLATE 'utf8mb4_0900_ai_ci',
+	`Nf` DOUBLE NOT NULL DEFAULT '0',
+	`Nft` DOUBLE NOT NULL DEFAULT '0',
+	`TDCR` DOUBLE NOT NULL DEFAULT '0',
+	`A1` DOUBLE NOT NULL DEFAULT '0'
+)
+COLLATE='utf8mb4_0900_ai_ci'
+ENGINE=InnoDB
+;
+
+CREATE TABLE `directdpmdata_id` (
+	`samid` VARCHAR(30) NOT NULL COLLATE 'utf8mb4_0900_ai_ci',
+	`taskid` VARCHAR(13) NOT NULL COLLATE 'utf8mb4_0900_ai_ci',
+	`Nf` DOUBLE NOT NULL DEFAULT '0',
+	`Nft` DOUBLE NOT NULL DEFAULT '0',
+	`TDCR` DOUBLE NOT NULL DEFAULT '0',
+	`A1` DOUBLE NOT NULL DEFAULT '0'
+)
+COLLATE='utf8mb4_0900_ai_ci'
+ENGINE=InnoDB
+;
+
+CREATE TABLE `doublemarkdata` (
+	`taskid` VARCHAR(13) NOT NULL COLLATE 'utf8mb4_0900_ai_ci',
+	`Nf` DOUBLE NOT NULL DEFAULT '0',
+	`Nft` DOUBLE NOT NULL DEFAULT '0',
+	`TDCR` DOUBLE NOT NULL DEFAULT '0',
+	`N1` DOUBLE NOT NULL DEFAULT '0',
+	`Eff1` DOUBLE NOT NULL DEFAULT '0',
+	`A1` DOUBLE NOT NULL DEFAULT '0',
+	`N2` DOUBLE NOT NULL DEFAULT '0',
+	`Eff2` DOUBLE NOT NULL DEFAULT '0',
+	`A2` DOUBLE NOT NULL DEFAULT '0'
+)
+COLLATE='utf8mb4_0900_ai_ci'
+ENGINE=InnoDB
+;
+---------------------------------update152-----------------------------------
+ALTER TABLE `task`
+	CHANGE COLUMN `nuclide` `nuclide` TINYTEXT NOT NULL COLLATE 'utf8mb4_0900_ai_ci' AFTER `mode`,
+	CHANGE COLUMN `eff1` `eff1` TINYTEXT NULL COLLATE 'utf8mb4_0900_ai_ci' AFTER `eff_refer`;
+ALTER TABLE `tasklist`
+	CHANGE COLUMN `nuclide` `nuclide` TINYTEXT NOT NULL COLLATE 'utf8mb4_0900_ai_ci' AFTER `mode`,
+	CHANGE COLUMN `eff1` `eff1` TINYTEXT NULL COLLATE 'utf8mb4_0900_ai_ci' AFTER `eff_refer`;
+
+CREATE TABLE `triplemarkdata` (
+	`taskid` VARCHAR(13) NOT NULL COLLATE 'utf8mb4_0900_ai_ci',
+	`Nf` DOUBLE NOT NULL DEFAULT '0',
+	`Nft` DOUBLE NOT NULL DEFAULT '0',
+	`TDCR` DOUBLE NOT NULL DEFAULT '0',
+	`N1` DOUBLE NOT NULL DEFAULT '0',
+	`Eff1` DOUBLE NOT NULL DEFAULT '0',
+	`A1` DOUBLE NOT NULL DEFAULT '0',
+	`N2` DOUBLE NOT NULL DEFAULT '0',
+	`Eff2` DOUBLE NOT NULL DEFAULT '0',
+	`A2` DOUBLE NOT NULL DEFAULT '0',
+	`N3` DOUBLE NOT NULL DEFAULT '0',
+	`Eff3` DOUBLE NOT NULL DEFAULT '0',
+	`A3` DOUBLE NOT NULL DEFAULT '0'
+)
+COLLATE='utf8mb4_0900_ai_ci'
+ENGINE=InnoDB
+;
+-----------------------------update153-----------------------------------
+CREATE TABLE `epcurve` (
+	`idindex` INT NOT NULL AUTO_INCREMENT,
+	`taskid` VARCHAR(13) NOT NULL DEFAULT '0' COLLATE 'utf8mb4_0900_ai_ci',
+	`sie` DOUBLE NOT NULL DEFAULT '0',
+	`ep` DOUBLE NOT NULL DEFAULT '0',
+	PRIMARY KEY (`idindex`) USING BTREE
+)
+COLLATE='utf8mb4_0900_ai_ci'
+ENGINE=InnoDB
+;
+
+ALTER TABLE `nuclide`
+	ADD COLUMN `curve` VARCHAR(13) NULL DEFAULT NULL AFTER `tcr_`;
+
+ALTER TABLE `logs`
+	CHANGE COLUMN `oldvalue` `oldvalue` TEXT NULL COLLATE 'utf8mb4_0900_ai_ci' AFTER `msg`,
+	CHANGE COLUMN `newvalue` `newvalue` TEXT NULL COLLATE 'utf8mb4_0900_ai_ci' AFTER `oldvalue`;
+CREATE TABLE `doublecall` (
+	`idindex` INT NOT NULL AUTO_INCREMENT,
+	`taskid` VARCHAR(13) NOT NULL DEFAULT '0' COLLATE 'utf8mb4_0900_ai_ci',
+	`sie` DOUBLE NOT NULL DEFAULT '0',
+	PRIMARY KEY (`idindex`) USING BTREE
+)
+COLLATE='utf8mb4_0900_ai_ci'
+ENGINE=InnoDB
+AUTO_INCREMENT=2
+;
+
+ALTER TABLE `quenchcurve`
+	ADD COLUMN `SIS` DOUBLE NULL DEFAULT NULL AFTER `eff3`;
+ALTER TABLE `datarecord`
+	CHANGE COLUMN `SIE` `SIE` DOUBLE NULL DEFAULT NULL AFTER `samID`;
+ALTER TABLE `datarecord`
+	ADD COLUMN `siestate` CHAR(1) NOT NULL DEFAULT '0' AFTER `ksdt`;
+
+CREATE TABLE `doublesam` (
+	`taskid` VARCHAR(13) NOT NULL COLLATE 'utf8mb4_0900_ai_ci',
+	`a1` DOUBLE NOT NULL DEFAULT '0',
+	`a2` DOUBLE NOT NULL DEFAULT '0',
+	`a3` DOUBLE NULL DEFAULT '0',
+	PRIMARY KEY (`taskid`) USING BTREE
+)
+COLLATE='utf8mb4_0900_ai_ci'
+ENGINE=InnoDB
+;
+
+ALTER TABLE `noquench`
+	CHANGE COLUMN `H3date` `H3date` DATETIME NOT NULL AFTER `H3unit`,
+	CHANGE COLUMN `C14date` `C14date` DATETIME NOT NULL AFTER `C14unit`;
+ALTER TABLE `quench`
+	CHANGE COLUMN `calibrateddate` `calibrateddate` DATETIME NOT NULL AFTER `unit`;
+ALTER TABLE `specimen`
+	CHANGE COLUMN `calibrateddate` `calibrateddate` DATETIME NOT NULL AFTER `unit`;
+ALTER TABLE `alphabeta`
+	CHANGE COLUMN `date_a` `date_a` DATETIME NOT NULL AFTER `unit_a`,
+	CHANGE COLUMN `date_b` `date_b` DATETIME NOT NULL AFTER `unit_b`;
